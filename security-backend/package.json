@@ -1,0 +1,25 @@
+{
+  "name": "traceguard-security-backend",
+  "version": "0.1.0",
+  "description": "TraceGuard — AI Model & LLM Application Security Monitor — Security Backend",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test tests/**/*.test.js",
+    "test:watch": "node --test --watch tests/**/*.test.js",
+    "db:init": "node -e \"const { initDatabase } = require('./src/db/database.js'); initDatabase().then(() => { console.log('Database initialized.'); process.exit(0); }).catch(e => { console.error(e); process.exit(1); });\""
+  },
+  "keywords": ["traceguard", "ai-security", "llm-security", "audit"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "sql.js": "^1.11.0",
+    "cors": "^2.8.5",
+    "helmet": "^8.0.0",
+    "dotenv": "^16.4.5"
+  }
+}

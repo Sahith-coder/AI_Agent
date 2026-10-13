@@ -1,0 +1,30 @@
+# Environment
+.env
+.env.example
+
+# Dependencies
+node_modules/
+
+# SQLite databases and transient files
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test artifacts
+tests/tmp/
+coverage/
