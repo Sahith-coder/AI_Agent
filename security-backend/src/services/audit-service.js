@@ -8,6 +8,7 @@ const {
   generateToolEventId,
   generateRunId,
   generateResultId,
+  generateSessionId,
   validateTransition,
 } = require('./trace-service');
 
@@ -262,15 +263,8 @@ function getTrace(traceId) {
     [traceId]
   );
 
-  const retrieval_records = db.all(
-    'SELECT * FROM retrieval_records WHERE trace_id = ? ORDER BY retrieval_order ASC',
-    [traceId]
-  );
-
-  const tool_events = db.all(
-    'SELECT * FROM tool_events WHERE trace_id = ? ORDER BY timestamp ASC',
-    [traceId]
-  );
+  const tool_events = listToolEvents(traceId);
+  const retrieval_records = listRetrievalRecords(traceId);
 
   return {
     interaction,
@@ -360,6 +354,7 @@ const VALID_TOOL_OUTCOMES = ['proposed', 'started', 'succeeded', 'failed', 'deni
  * @returns {string} tool_event_id
  */
 function addToolEvent({
+  tool_event_id = null,
   trace_id,
   event_id = null,
   sequence_no = null,
@@ -373,6 +368,7 @@ function addToolEvent({
   suspicion_indicators = null,
   execution_outcome = 'unknown',
   redacted_result_summary = null,
+  timestamp = null,
 }) {
   if (!trace_id || !tool_name || !sanitized_argument_summary) {
     const err = new Error('trace_id, tool_name, and sanitized_argument_summary are required.');
@@ -393,8 +389,8 @@ function addToolEvent({
     throw err;
   }
 
-  const toolEventId = generateToolEventId();
-  const now = new Date().toISOString();
+  const toolEventId = tool_event_id || generateToolEventId();
+  const eventTime = timestamp || new Date().toISOString();
   const source_str = source_metadata ? (typeof source_metadata === 'string' ? source_metadata : JSON.stringify(source_metadata)) : null;
   const susp_str = suspicion_indicators ? (typeof suspicion_indicators === 'string' ? suspicion_indicators : JSON.stringify(suspicion_indicators)) : null;
 
@@ -408,7 +404,7 @@ function addToolEvent({
     [
       toolEventId, trace_id, event_id, sequence_no, parent_event_id,
       call_id, tool_name, tool_server_identity, sanitized_argument_summary,
-      argument_hash, source_str, susp_str, now,
+      argument_hash, source_str, susp_str, eventTime,
       execution_outcome, redacted_result_summary
     ]
   );
@@ -417,15 +413,103 @@ function addToolEvent({
 }
 
 /**
+ * Helper to normalize tool event records with property aliases for compatibility.
+ * @param {Object} row
+ * @returns {Object}
+ */
+function normalizeToolEvent(row) {
+  if (!row) return null;
+  row.outcome = row.execution_outcome;
+  row.argument_summary = row.sanitized_argument_summary;
+  row.result_summary = row.redacted_result_summary;
+  return row;
+}
+
+/**
  * List tool events for a trace.
  * @param {string} traceId
  * @returns {Array<Object>}
  */
 function listToolEvents(traceId) {
-  return db.all(
+  const rows = db.all(
     'SELECT * FROM tool_events WHERE trace_id = ? ORDER BY timestamp ASC',
     [traceId]
   );
+  return rows.map(normalizeToolEvent);
+}
+
+/**
+ * Get all tool events for a specific call_id within a trace.
+ * @param {string} traceId
+ * @param {string} callId
+ * @returns {Array<Object>}
+ */
+function getToolEventsByCallId(traceId, callId) {
+  if (!traceId || !callId) return [];
+  const rows = db.all(
+    'SELECT * FROM tool_events WHERE trace_id = ? AND call_id = ? ORDER BY timestamp ASC',
+    [traceId, callId]
+  );
+  return rows.map(normalizeToolEvent);
+}
+
+/**
+ * Get the latest tool event for a specific call_id within a trace.
+ * @param {string} traceId
+ * @param {string} callId
+ * @returns {Object|null}
+ */
+function getLatestToolEventByCallId(traceId, callId) {
+  if (!traceId || !callId) return null;
+  const row = db.get(
+    'SELECT * FROM tool_events WHERE trace_id = ? AND call_id = ? ORDER BY timestamp DESC LIMIT 1',
+    [traceId, callId]
+  );
+  return normalizeToolEvent(row);
+}
+
+/**
+ * List tool events for a trace with optional filtering and pagination.
+ * @param {string} traceId
+ * @param {Object} [filter]
+ * @returns {{ tool_events: Array<Object>, total: number, page: number, limit: number, total_pages: number }}
+ */
+function listToolEventsFiltered(traceId = null, filter = {}) {
+  const page = Math.max(1, parseInt(filter.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(filter.limit, 10) || 20));
+  const offset = (page - 1) * limit;
+
+  const conditions = [];
+  const params = [];
+
+  if (traceId) {
+    conditions.push('trace_id = ?');
+    params.push(traceId);
+  }
+
+  if (filter.outcome) {
+    conditions.push('execution_outcome = ?');
+    params.push(filter.outcome);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const countRow = db.get(`SELECT COUNT(*) AS total FROM tool_events ${whereClause}`, params);
+  const total = countRow ? countRow.total : 0;
+
+  const orderClause = traceId ? 'ORDER BY timestamp ASC' : 'ORDER BY timestamp DESC';
+  const queryParams = [...params, limit, offset];
+  const rows = db.all(
+    `SELECT * FROM tool_events ${whereClause} ${orderClause} LIMIT ? OFFSET ?`,
+    queryParams
+  ).map(normalizeToolEvent);
+
+  return {
+    tool_events: rows,
+    total,
+    page,
+    limit,
+    total_pages: Math.ceil(total / limit) || (total === 0 ? 0 : 1),
+  };
 }
 
 // ---- Attack Lab Result Storage (B6) ----
@@ -544,7 +628,7 @@ function addTestResult({
 }
 
 /**
- * Get a test run with all its results.
+ * Get a test run with all its results and aggregated counts.
  * @param {string} runId
  * @returns {Object|null}
  */
@@ -552,8 +636,99 @@ function getTestRun(runId) {
   const run = db.get('SELECT * FROM test_runs WHERE run_id = ?', [runId]);
   if (!run) return null;
 
-  const results = db.all('SELECT * FROM test_results WHERE run_id = ?', [runId]);
-  return { ...run, results, result_count: results.length };
+  const results = db.all('SELECT * FROM test_results WHERE run_id = ? ORDER BY case_id ASC', [runId]);
+  const passed = results.filter(r => r.pass_fail_result === 'pass').length;
+  const failed = results.filter(r => r.pass_fail_result === 'fail').length;
+  const errors = results.filter(r => r.pass_fail_result === 'error').length;
+  const skipped = results.filter(r => r.pass_fail_result === 'skipped').length;
+  const total = results.length;
+  const pass_rate = total > 0 ? passed / total : 0;
+
+  return {
+    ...run,
+    results,
+    test_case_count: run.test_case_count || total,
+    result_count: total,
+    passed_count: passed,
+    failed_count: failed,
+    error_count: errors,
+    skipped_count: skipped,
+    pass_rate,
+  };
+}
+
+/**
+ * List Attack Lab test runs with pagination and summary counts.
+ * @param {Object} [options]
+ * @returns {{ runs: Array<Object>, total: number, page: number, limit: number, total_pages: number }}
+ */
+function listTestRuns({ page = 1, limit = 20, status = null } = {}) {
+  const p = Math.max(1, parseInt(page, 10) || 1);
+  const l = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (p - 1) * l;
+
+  let countSql = 'SELECT COUNT(*) AS total FROM test_runs';
+  let querySql = 'SELECT * FROM test_runs';
+  const params = [];
+
+  if (status) {
+    countSql += ' WHERE status = ?';
+    querySql += ' WHERE status = ?';
+    params.push(status);
+  }
+
+  const countRow = db.get(countSql, params);
+  const total = countRow ? countRow.total : 0;
+
+  querySql += ' ORDER BY started_at DESC LIMIT ? OFFSET ?';
+  const rows = db.all(querySql, [...params, l, offset]);
+
+  const runs = rows.map(run => {
+    const counts = db.get(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(CASE WHEN pass_fail_result = 'pass' THEN 1 ELSE 0 END) AS passed,
+         SUM(CASE WHEN pass_fail_result = 'fail' THEN 1 ELSE 0 END) AS failed,
+         SUM(CASE WHEN pass_fail_result = 'error' THEN 1 ELSE 0 END) AS errors,
+         SUM(CASE WHEN pass_fail_result = 'skipped' THEN 1 ELSE 0 END) AS skipped
+       FROM test_results WHERE run_id = ?`,
+      [run.run_id]
+    );
+
+    const resultTotal = counts ? counts.total : 0;
+    const passedCount = counts ? (counts.passed || 0) : 0;
+    const failedCount = counts ? (counts.failed || 0) : 0;
+    const errorCount = counts ? (counts.errors || 0) : 0;
+    const skippedCount = counts ? (counts.skipped || 0) : 0;
+
+    return {
+      ...run,
+      test_case_count: run.test_case_count || resultTotal,
+      passed_count: passedCount,
+      failed_count: failedCount,
+      error_count: errorCount,
+      skipped_count: skippedCount,
+      pass_rate: resultTotal > 0 ? passedCount / resultTotal : 0,
+    };
+  });
+
+  return {
+    runs,
+    total,
+    page: p,
+    limit: l,
+    total_pages: Math.ceil(total / l) || (total === 0 ? 0 : 1),
+  };
+}
+
+/**
+ * Get the latest completed or active Attack Lab test run summary.
+ * @returns {Object|null}
+ */
+function getLatestTestRun() {
+  const latestRow = db.get('SELECT run_id FROM test_runs ORDER BY started_at DESC LIMIT 1');
+  if (!latestRow) return null;
+  return getTestRun(latestRow.run_id);
 }
 
 // ---- Aggregate stats ----
@@ -596,6 +771,137 @@ function getStats() {
   };
 }
 
+// ---- Clarification Session Management (Task 4) ----
+
+/**
+ * Create a new clarification session.
+ * @param {Object} session
+ * @returns {Object} created session row
+ */
+function createClarificationSession({
+  session_id = null,
+  trace_id,
+  query,
+  candidates,
+  clarification_prompt = null,
+}) {
+  if (!trace_id || !query) {
+    const err = new Error('trace_id and query are required for clarification session.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const interaction = getInteraction(trace_id);
+  if (!interaction) {
+    const err = new Error(`Foreign key violation: trace_id '${trace_id}' does not exist.`);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const sessionId = session_id || generateSessionId();
+  const now = new Date().toISOString();
+  const candidatesJson = typeof candidates === 'string' ? candidates : JSON.stringify(candidates || []);
+
+  db.run(
+    `INSERT INTO clarification_sessions
+      (session_id, trace_id, query, status, candidates_json, clarification_prompt, created_at, updated_at)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
+    [sessionId, trace_id, query, candidatesJson, clarification_prompt, now, now]
+  );
+
+  return {
+    session_id: sessionId,
+    trace_id,
+    query,
+    status: 'pending',
+    candidates: typeof candidates === 'string' ? JSON.parse(candidates) : candidates,
+    clarification_prompt,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+/**
+ * Get a clarification session by session_id.
+ * @param {string} sessionId
+ * @returns {Object|null}
+ */
+function getClarificationSession(sessionId) {
+  if (!sessionId) return null;
+  const row = db.get('SELECT * FROM clarification_sessions WHERE session_id = ?', [sessionId]);
+  if (!row) return null;
+  try {
+    row.candidates = JSON.parse(row.candidates_json);
+  } catch {
+    row.candidates = [];
+  }
+  return row;
+}
+
+/**
+ * Get the latest pending clarification session for a trace.
+ * @param {string} traceId
+ * @returns {Object|null}
+ */
+function getPendingClarificationSessionByTrace(traceId) {
+  if (!traceId) return null;
+  const row = db.get(
+    "SELECT * FROM clarification_sessions WHERE trace_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+    [traceId]
+  );
+  if (!row) return null;
+  try {
+    row.candidates = JSON.parse(row.candidates_json);
+  } catch {
+    row.candidates = [];
+  }
+  return row;
+}
+
+/**
+ * Update a clarification session status and selected candidate.
+ * @param {string} sessionId
+ * @param {Object} updates
+ * @returns {Object} updated session
+ */
+function updateClarificationSession(sessionId, { status, selected_candidate_id = null }) {
+  const existing = getClarificationSession(sessionId);
+  if (!existing) {
+    const err = new Error(`Clarification session '${sessionId}' not found.`);
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const now = new Date().toISOString();
+  const resolvedAt = status === 'resolved' ? now : existing.resolved_at;
+
+  db.run(
+    `UPDATE clarification_sessions
+     SET status = ?, selected_candidate_id = COALESCE(?, selected_candidate_id),
+         updated_at = ?, resolved_at = ?
+     WHERE session_id = ?`,
+    [status, selected_candidate_id, now, resolvedAt, sessionId]
+  );
+
+  return getClarificationSession(sessionId);
+}
+
+/**
+ * List all clarification sessions for a trace.
+ * @param {string} traceId
+ * @returns {Array<Object>}
+ */
+function listClarificationSessions(traceId) {
+  const rows = db.all(
+    'SELECT * FROM clarification_sessions WHERE trace_id = ? ORDER BY created_at ASC',
+    [traceId]
+  );
+  return rows.map(r => {
+    try { r.candidates = JSON.parse(r.candidates_json); } catch { r.candidates = []; }
+    return r;
+  });
+}
+
 module.exports = {
   createInteraction,
   getInteraction,
@@ -608,10 +914,21 @@ module.exports = {
   listRetrievalRecords,
   addToolEvent,
   listToolEvents,
+  getToolEventsByCallId,
+  getLatestToolEventByCallId,
+  listToolEventsFiltered,
   createTestRun,
   updateTestRunStatus,
   addTestResult,
   getTestRun,
+  listTestRuns,
+  getLatestTestRun,
   getStats,
+  createClarificationSession,
+  getClarificationSession,
+  getPendingClarificationSessionByTrace,
+  updateClarificationSession,
+  listClarificationSessions,
+  getSecurityEvents: (traceId) => listEvents({ trace_id: traceId }),
   VALID_TOOL_OUTCOMES,
 };

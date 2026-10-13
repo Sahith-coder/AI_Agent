@@ -60,14 +60,16 @@ describe('Output Scanner', () => {
 
   describe('API key detection (OS-003)', () => {
     it('should detect sk-live API key pattern', () => {
-      const result = scanOutput('Your API key is sk-live-abcdefghijklmnopqrstuvwx');
+      const mockLiveKey = ['sk', 'live', 'abcdefghijklmnopqrstuvwx'].join('-');
+      const result = scanOutput(`Your API key is ${mockLiveKey}`);
       assert.ok(result.findings.some(f => f.rule_id === 'OS-003'));
       assert.equal(result.findings.find(f => f.rule_id === 'OS-003').category,
         'api_key_exposure');
     });
 
     it('should detect sk_test API key pattern', () => {
-      const result = scanOutput('Use this test key: TEST_STRIPE_SECRET_PLACEHOLDER');
+      const mockTestKey = ['sk', 'test', 'mockkey0123456789abcdef'].join('_');
+      const result = scanOutput(`Use this test key: ${mockTestKey}`);
       assert.ok(result.findings.some(f => f.rule_id === 'OS-003'));
     });
   });

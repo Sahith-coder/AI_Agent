@@ -12,6 +12,9 @@ const securityRoutes = require('./routes/security.routes');
 const eventsRoutes = require('./routes/events.routes');
 const tracesRoutes = require('./routes/traces.routes');
 const statsRoutes = require('./routes/stats.routes');
+const retrievalRoutes = require('./routes/retrieval.routes');
+const dashboardRoutes = require('./routes/dashboard.routes');
+const attackLabRoutes = require('./routes/attack-lab.routes');
 
 /**
  * Create and configure the Express application.
@@ -50,6 +53,9 @@ function createApp() {
   app.use('/api', eventsRoutes);
   app.use('/api', tracesRoutes);
   app.use('/api', statsRoutes);
+  app.use('/api', retrievalRoutes);
+  app.use('/api', dashboardRoutes);
+  app.use('/api', attackLabRoutes);
 
   // ---------------------------------------------------------------------------
   // 404 fallback

@@ -123,6 +123,22 @@ function validateTransition(currentStatus, targetStatus) {
   }
 }
 
+/**
+ * Generate a new clarification session ID.
+ * @returns {string}
+ */
+function generateSessionId() {
+  return `cs-${crypto.randomUUID()}`;
+}
+
+/**
+ * Generate a new candidate ID.
+ * @returns {string}
+ */
+function generateCandidateId() {
+  return `cand-${crypto.randomUUID()}`;
+}
+
 module.exports = {
   VALID_STATUSES,
   TERMINAL_STATUSES,
@@ -133,6 +149,8 @@ module.exports = {
   generateToolEventId,
   generateRunId,
   generateResultId,
+  generateSessionId,
+  generateCandidateId,
   isValidTraceId,
   validateTransition,
 };

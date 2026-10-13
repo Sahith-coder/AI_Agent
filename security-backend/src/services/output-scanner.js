@@ -4,12 +4,13 @@
  * TraceGuard Output Scanner
  *
  * Inspects model-generated output for configured sensitive-data patterns.
- * Returns structured findings with severity and redaction metadata.
+ * Returns structured findings with severity, evidence location spans, and redaction metadata.
  *
  * The scanner does NOT trust the model's claim that its output is safe.
  */
 
 const { redact } = require('./redaction-service');
+const { getRule } = require('./rule-catalogue');
 
 // ---------------------------------------------------------------------------
 // Sensitive-data detection rules
@@ -76,7 +77,7 @@ const OUTPUT_RULES = [
 ];
 
 /**
- * Scan output text for sensitive-data patterns.
+ * Scan output text for sensitive-data patterns with exact UTF-16 evidence location spans.
  * @param {string} text — the model output to scan.
  * @returns {{ findings: Array, summary: Object, redaction_matches: Array }}
  */
@@ -96,24 +97,46 @@ function scanOutput(text) {
   let highestSeverity = null;
 
   for (const rule of OUTPUT_RULES) {
-    // Reset lastIndex for global patterns
-    rule.pattern.lastIndex = 0;
-    const matches = text.match(rule.pattern);
-    if (matches && matches.length > 0) {
+    const flags = rule.pattern.flags.includes('g') ? rule.pattern.flags : rule.pattern.flags + 'g';
+    const regex = new RegExp(rule.pattern.source, flags);
+    const locations = [];
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      locations.push({
+        start_index: match.index,
+        end_index: match.index + match[0].length,
+        unit: 'utf16_code_units',
+      });
+      if (regex.lastIndex === match.index) {
+        regex.lastIndex++;
+      }
+    }
+
+    if (locations.length > 0) {
+      const catalogEntry = getRule(rule.id);
       findings.push({
         rule_id: rule.id,
+        rule_version: catalogEntry ? catalogEntry.version : '1.0.0',
+        name: catalogEntry ? catalogEntry.name : rule.description,
         category: rule.category,
         severity: rule.severity,
-        reason: `${rule.description} — ${matches.length} occurrence(s) detected.`,
+        reason: `${rule.description} — ${locations.length} occurrence(s) detected.`,
         confidence: null,
         evidence_summary: `Matched rule ${rule.id}: ${rule.description}`,
-        recommended_action: 'Apply the configured output policy. Redact or block before returning to the user.',
-        match_count: matches.length,
+        recommended_action: catalogEntry
+          ? catalogEntry.recommended_action
+          : 'Apply the configured output policy. Redact or block before returning to the user.',
+        match_count: locations.length,
+        location: locations[0],
+        locations,
       });
+
       redactionMatches.push({
         pattern: new RegExp(rule.pattern.source, rule.pattern.flags),
         label: rule.label,
       });
+
       const rank = severityRank[rule.severity] ?? 0;
       if (rank > highestRank) {
         highestRank = rank;
@@ -121,6 +144,14 @@ function scanOutput(text) {
       }
     }
   }
+
+  // Stable ordering: by severity rank DESC, then rule ID ASC
+  findings.sort((a, b) => {
+    const rA = severityRank[a.severity] ?? 0;
+    const rB = severityRank[b.severity] ?? 0;
+    if (rB !== rA) return rB - rA;
+    return a.rule_id.localeCompare(b.rule_id);
+  });
 
   return {
     findings,
@@ -134,6 +165,7 @@ function scanOutput(text) {
 
 /**
  * Scan and redact output text in one call.
+ * Offsets in findings refer to the original, unredacted text.
  * @param {string} text
  * @returns {{ findings, summary, sanitized_content, redacted_evidence, redaction_count }}
  */
@@ -172,4 +204,18 @@ function getRules() {
   }));
 }
 
-module.exports = { scanOutput, scanAndRedact, getRules };
+/**
+ * Redact sensitive tokens from output text.
+ * @param {string} text
+ * @returns {{ redacted_text: string, findings: Array, redaction_count: number }}
+ */
+function redactOutput(text) {
+  const res = scanAndRedact(text);
+  return {
+    redacted_text: res.sanitized_content,
+    findings: res.findings,
+    redaction_count: res.redaction_count,
+  };
+}
+
+module.exports = { scanOutput, scanAndRedact, redactOutput, getRules };

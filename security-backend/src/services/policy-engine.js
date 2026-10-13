@@ -89,7 +89,7 @@ const DEFAULT_POLICIES = [
  * @returns {{ decision, severity, reasons, findings_count, matched_policies, recommended_action, policy_version, winning_rule }}
  */
 function evaluate(findings, policies) {
-  const activePolicies = policies || DEFAULT_POLICIES;
+  const activePolicies = Array.isArray(policies) ? policies : DEFAULT_POLICIES;
 
   if (!findings || findings.length === 0) {
     return {
@@ -222,6 +222,8 @@ function getPolicies() {
 
 module.exports = {
   evaluate,
+  evaluatePolicy: evaluate,
+  evaluateFindings: evaluate,
   getPolicies,
   POLICY_VERSION,
   DECISION_PRIORITY,

@@ -42,7 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_events_timestamp  ON security_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_severity   ON security_events(severity);
 CREATE INDEX IF NOT EXISTS idx_events_stage      ON security_events(stage);
 CREATE INDEX IF NOT EXISTS idx_events_decision   ON security_events(policy_decision);
-CREATE INDEX IF NOT EXISTS idx_events_trace_seq  ON security_events(trace_id, sequence_no);
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_events_trace_seq ON security_events(trace_id, sequence_no);
 
 -- 3. Retrieval Provenance Storage (B4)
 CREATE TABLE IF NOT EXISTS retrieval_records (
@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS tool_events (
 CREATE INDEX IF NOT EXISTS idx_tool_events_trace_id ON tool_events(trace_id);
 CREATE INDEX IF NOT EXISTS idx_tool_events_tool_name ON tool_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_tool_events_outcome ON tool_events(execution_outcome);
+CREATE INDEX IF NOT EXISTS idx_tool_events_call_id ON tool_events(call_id);
+CREATE INDEX IF NOT EXISTS idx_tool_events_trace_call ON tool_events(trace_id, call_id);
 
 -- 5. Attack Lab Persistence Contracts (B6)
 CREATE TABLE IF NOT EXISTS test_runs (
@@ -127,3 +129,23 @@ CREATE TABLE IF NOT EXISTS test_results (
 
 CREATE INDEX IF NOT EXISTS idx_test_results_run_id ON test_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_test_results_case_id ON test_results(case_id);
+CREATE INDEX IF NOT EXISTS idx_test_runs_started_at ON test_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_test_results_pass_fail ON test_results(run_id, pass_fail_result);
+
+-- 6. Clarification Sessions Persistence (Task 4)
+CREATE TABLE IF NOT EXISTS clarification_sessions (
+    session_id              TEXT PRIMARY KEY,
+    trace_id                TEXT NOT NULL,
+    query                   TEXT NOT NULL,
+    status                  TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'resolved', 'stale', 'cancelled')),
+    candidates_json         TEXT NOT NULL,
+    selected_candidate_id   TEXT,
+    clarification_prompt    TEXT,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at             TEXT,
+    FOREIGN KEY (trace_id) REFERENCES interactions(trace_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_clarification_trace_id ON clarification_sessions(trace_id);
+CREATE INDEX IF NOT EXISTS idx_clarification_status   ON clarification_sessions(status);

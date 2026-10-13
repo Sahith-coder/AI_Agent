@@ -6,6 +6,7 @@ const promptScanner = require('../services/prompt-scanner');
 const outputScanner = require('../services/output-scanner');
 const policyEngine = require('../services/policy-engine');
 const auditService = require('../services/audit-service');
+const { ToolMonitorService } = require('../services/tool-monitor');
 
 const router = Router();
 
@@ -103,6 +104,57 @@ router.post('/security/evaluate', validateEvaluationRequest, (req, res, next) =>
       sanitized_content: policy.decision === 'redact' ? sanitizedContent : undefined,
       redaction_count: redactionCount > 0 ? redactionCount : undefined,
       event_id: eventId,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const defaultToolMonitor = new ToolMonitorService();
+
+/**
+ * POST /api/security/observe-tool
+ *
+ * Observational endpoint for recording and analyzing tool/MCP activity.
+ */
+router.post('/security/observe-tool', async (req, res, next) => {
+  try {
+    const observation = req.body || {};
+    const result = await defaultToolMonitor.observeTool(observation);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/security/tool-events/:traceId
+ *
+ * Query tool events for a trace with optional outcome filter and pagination.
+ */
+router.get('/security/tool-events/:traceId', (req, res, next) => {
+  try {
+    const { traceId } = req.params;
+    const { outcome, page, limit } = req.query;
+
+    const interaction = auditService.getInteraction(traceId);
+    if (!interaction) {
+      return res.status(404).json({
+        error: 'Not found',
+        message: `No trace found with ID: ${traceId}`,
+      });
+    }
+
+    const filtered = auditService.listToolEventsFiltered(traceId, { outcome, page, limit });
+
+    res.status(200).json({
+      trace_id: traceId,
+      total: filtered.total,
+      page: filtered.page,
+      limit: filtered.limit,
+      total_pages: filtered.total_pages,
+      items: filtered.tool_events,
+      tool_events: filtered.tool_events,
     });
   } catch (err) {
     next(err);

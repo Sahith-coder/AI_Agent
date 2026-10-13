@@ -192,6 +192,58 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    version: 3,
+    name: '003_sequence_uniqueness_enforcement',
+    up(db) {
+      // Enforce sequence_no uniqueness per trace at the database engine level
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uidx_events_trace_seq ON security_events(trace_id, sequence_no);');
+    },
+  },
+  {
+    version: 4,
+    name: '004_clarification_sessions',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS clarification_sessions (
+            session_id              TEXT PRIMARY KEY,
+            trace_id                TEXT NOT NULL,
+            query                   TEXT NOT NULL,
+            status                  TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'resolved', 'stale', 'cancelled')),
+            candidates_json         TEXT NOT NULL,
+            selected_candidate_id   TEXT,
+            clarification_prompt    TEXT,
+            created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved_at             TEXT,
+            FOREIGN KEY (trace_id) REFERENCES interactions(trace_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_clarification_trace_id ON clarification_sessions(trace_id);
+        CREATE INDEX IF NOT EXISTS idx_clarification_status   ON clarification_sessions(status);
+      `);
+    },
+  },
+  {
+    version: 5,
+    name: '005_tool_events_call_id_index',
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tool_events_call_id ON tool_events(call_id);
+        CREATE INDEX IF NOT EXISTS idx_tool_events_trace_call ON tool_events(trace_id, call_id);
+      `);
+    },
+  },
+  {
+    version: 6,
+    name: '006_dashboard_and_attack_lab_indexes',
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_test_runs_started_at ON test_runs(started_at);
+        CREATE INDEX IF NOT EXISTS idx_test_results_pass_fail ON test_results(run_id, pass_fail_result);
+      `);
+    },
+  },
 ];
 
 /**
